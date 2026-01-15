@@ -1,0 +1,25 @@
+{
+    "ignorePaths": [
+        "go.mod",
+        "go.sum"
+    ],
+    "version": "0.2",
+    "language": "en",
+    "words": [
+        "boumenot",
+        "coverprofile",
+        "creasty",
+        "deepcopy",
+        "Enumer",
+        "gocover",
+        "gotest",
+        "gotestfmt",
+        "gotesttools",
+        "irongut",
+        "marocchino",
+        "shopspring",
+        "stretchr",
+        "tiendc",
+        "zauberhaus"
+    ]
+}

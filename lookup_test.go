@@ -842,6 +842,13 @@ func Test_Get_Set(t *testing.T) {
 						obj = tt.obj[1]
 					case "parse", "parse to pointer":
 						expected = value
+
+						if tm, ok := expected.(time.Time); ok {
+							if isUTC() {
+								expected = tm.UTC()
+							}
+						}
+
 						value, err = stringer.String(value)
 						assert.NoError(t, err)
 
@@ -1761,4 +1768,10 @@ func TestHas(t *testing.T) {
 		assert.False(t, has)
 		assert.NoError(t, err)
 	})
+}
+
+func isUTC() bool {
+	t := time.Now()
+	zoneName, offset := t.Zone()
+	return offset == 0 && (zoneName == "UTC" || zoneName == "GMT")
 }

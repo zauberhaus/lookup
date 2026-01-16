@@ -23,20 +23,3 @@ func NewParserHook(to reflect.Type, f func(txt string) (any, error)) ParserHook 
 		Parse: f,
 	}
 }
-
-type StringHook struct {
-	From   reflect.Type
-	String func(val any) (string, error)
-}
-
-func NewStringHookFor[T any](f func(val any) (string, error)) StringHook {
-	t := reflect.TypeFor[T]()
-	return NewStringHook(t, f)
-}
-
-func NewStringHook(to reflect.Type, f func(val any) (string, error)) StringHook {
-	return StringHook{
-		From:   to,
-		String: f,
-	}
-}

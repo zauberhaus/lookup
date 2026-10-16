@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/zauberhaus/lookup/compare/v1.0.2...v1.1.0) (2026-10-16)
+
+
+### Features
+
+* add parser hooks ([ecb8818](https://github.com/zauberhaus/lookup/commit/ecb8818df2f3800a907f2fde4a8d87f4fc1443f0))
+
 ## [1.0.2](https://github.com/zauberhaus/lookup/compare/v1.0.1...v1.0.2) (2026-01-16)
 
 

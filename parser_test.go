@@ -836,3 +836,17 @@ func TestParse_WithHook(t *testing.T) {
 		assert.Equal(t, "just a string", result)
 	})
 }
+
+func TestParse_TrimsSpacesAroundElements(t *testing.T) {
+	val, err := lookup.Parse("1, 2 ,3", reflect.TypeFor[[]int]())
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2, 3}, val)
+
+	val, err = lookup.Parse(" 1,\t2 ", reflect.TypeFor[[2]int]())
+	require.NoError(t, err)
+	assert.Equal(t, [2]int{1, 2}, val)
+
+	val, err = lookup.Parse("a, b", reflect.TypeFor[[]string]())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b"}, val)
+}

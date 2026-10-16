@@ -1,5 +1,12 @@
 .vscode
 coverage.*
 
+
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
+
+
+examples/basic/basic
+examples/create/create
+examples/hooks/hooks
+examples/parsing/parsing

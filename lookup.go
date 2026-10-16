@@ -39,7 +39,7 @@ func Exists(obj any, path string) (bool, error) {
 		return false, fmt.Errorf("exists supports only structs")
 	}
 
-	result, err := process(v, exists, nil, parts...)
+	result, err := process(v, exists, nil, nil, parts...)
 	if err != nil {
 		return false, err
 	}
@@ -56,7 +56,7 @@ func Get(obj any, path string) (any, error) {
 		return nil, fmt.Errorf("get supports only structs")
 	}
 
-	return process(v, get, nil, parts...)
+	return process(v, get, nil, nil, parts...)
 }
 
 func Create(obj any, path string) (any, error) {
@@ -72,10 +72,13 @@ func Create(obj any, path string) (any, error) {
 		return nil, fmt.Errorf("create supports only struct pointers")
 	}
 
-	return process(v, create, nil, parts...)
+	return process(v, create, nil, nil, parts...)
 }
 
-func Set(obj any, path string, value any) (any, error) {
+// Set sets the field at path to value. A string is parsed into the type of
+// the field; hooks parse it into types Parse doesn't know, such as an
+// interface type.
+func Set(obj any, path string, value any, hooks ...ParserHook) (any, error) {
 
 	parts := split(path)
 
@@ -89,10 +92,10 @@ func Set(obj any, path string, value any) (any, error) {
 		return nil, fmt.Errorf("set supports only struct pointers")
 	}
 
-	return process(v, set, value, parts...)
+	return process(v, set, value, hooks, parts...)
 }
 
-func process(v reflect.Value, mode mode, value any, path ...string) (any, error) {
+func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...string) (any, error) {
 	if len(path) == 0 {
 		return nil, nil
 	}
@@ -180,18 +183,25 @@ func process(v reflect.Value, mode mode, value any, path ...string) (any, error)
 					if f.Type().Implements(field.Type()) {
 						field.Set(f)
 						val = value
+					} else if txt, ok := hookInput(f, field.Type(), hooks); ok {
+						val, err = parseInterface(txt, field.Type(), hooks)
+						if err != nil {
+							return nil, err
+						}
+
+						field.Set(reflect.ValueOf(val))
 					} else {
-						return nil, fmt.Errorf("%v (%v) doesn't implement %v", f, f.Type(), field.Type())
+						return nil, fmt.Errorf("%v doesn't implement %v", f.Type(), field.Type())
 					}
 				} else if f.Kind() == reflect.String {
-					val, err = Parse(f.String(), field.Type())
+					val, err = Parse(f.String(), field.Type(), hooks...)
 					if err != nil {
 						return nil, err
 					}
 
 					field.Set(reflect.ValueOf(val))
 				} else if f.Kind() == reflect.Pointer && f.Elem().Kind() == reflect.String {
-					val, err = Parse(f.Elem().String(), field.Type())
+					val, err = Parse(f.Elem().String(), field.Type(), hooks...)
 					if err != nil {
 						return nil, err
 					}
@@ -254,7 +264,7 @@ func process(v reflect.Value, mode mode, value any, path ...string) (any, error)
 			if f.Len() > index {
 				i := f.Index(index)
 				if mode == set && last {
-					val, _, err = setValue(i, i.Type(), value, func(field, f reflect.Value) {
+					val, _, err = setValue(i, i.Type(), value, hooks, func(field, f reflect.Value) {
 						field.Set(f)
 					})
 					if err != nil {
@@ -285,14 +295,20 @@ func process(v reflect.Value, mode mode, value any, path ...string) (any, error)
 						return nil, err
 					}
 
-					f = reflect.Append(f, reflect.ValueOf(tmp))
+					elem := reflect.ValueOf(tmp)
+					if !elem.IsValid() {
+						// an interface element has no default
+						elem = reflect.Zero(e)
+					}
+
+					f = reflect.Append(f, elem)
 				}
 
 				if i == index {
 					i := f.Index(index)
 
 					if mode == set && last {
-						val, _, err = setValue(i, i.Type(), value, func(field, f reflect.Value) {
+						val, _, err = setValue(i, i.Type(), value, hooks, func(field, f reflect.Value) {
 							field.Set(f)
 						})
 
@@ -358,7 +374,7 @@ func process(v reflect.Value, mode mode, value any, path ...string) (any, error)
 
 		if e.Kind() != k.Kind() {
 			if e.Kind() != reflect.String && k.Kind() == reflect.String {
-				val, err := Parse(k.String(), e)
+				val, err := Parse(k.String(), e, hooks...)
 				if err != nil {
 					return nil, err
 				}
@@ -378,7 +394,7 @@ func process(v reflect.Value, mode mode, value any, path ...string) (any, error)
 			} else {
 				e := f.Type().Elem()
 
-				val, f, err = setValue(f, e, value, func(field, value reflect.Value) {
+				val, f, err = setValue(f, e, value, hooks, func(field, value reflect.Value) {
 					field.SetMapIndex(k, value)
 				})
 
@@ -416,10 +432,10 @@ func process(v reflect.Value, mode mode, value any, path ...string) (any, error)
 	}
 
 	rest := path[1:]
-	return process(f, mode, value, rest...)
+	return process(f, mode, value, hooks, rest...)
 }
 
-func setValue(field reflect.Value, e reflect.Type, value any, set func(field reflect.Value, value reflect.Value)) (result any, v reflect.Value, err error) {
+func setValue(field reflect.Value, e reflect.Type, value any, hooks []ParserHook, set func(field reflect.Value, value reflect.Value)) (result any, v reflect.Value, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if e, ok := r.(error); ok {
@@ -438,11 +454,20 @@ func setValue(field reflect.Value, e reflect.Type, value any, set func(field ref
 		if f.Type().Implements(e) {
 			set(field, f)
 			return value, f, nil
+		} else if txt, ok := hookInput(f, e, hooks); ok {
+			val, err := parseInterface(txt, e, hooks)
+			if err != nil {
+				return nil, f, err
+			}
+
+			f := reflect.ValueOf(val)
+			set(field, f)
+			return val, f, nil
 		} else {
-			return nil, f, fmt.Errorf("%v (%v) doesn't implement %v", f, e, field.Type())
+			return nil, f, fmt.Errorf("%v doesn't implement %v", f.Type(), e)
 		}
 	} else if f.Kind() == reflect.String {
-		val, err := Parse(f.String(), e)
+		val, err := Parse(f.String(), e, hooks...)
 		if err != nil {
 			return nil, f, err
 		}

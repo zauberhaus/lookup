@@ -7,6 +7,7 @@ This directory contains examples demonstrating how to use the `lookup` library.
 *   Basic: Demonstrates `Get`, `Set`, and `Exists` operations.
 *   Create: Shows how to use `Create` to initialize nested structures.
 *   Parsing: Illustrates type conversion and custom parser hooks.
+*   Hooks: Uses parser hooks with `Set` to fill interface fields, slice and map elements.
 
 ## Running the Examples
 
@@ -28,4 +29,10 @@ go run examples/create/main.go
 
 ```bash
 go run examples/parsing/main.go
+```
+
+### Parser Hooks with Set
+
+```bash
+go run examples/hooks/main.go
 ```

@@ -9,8 +9,10 @@ import (
 	"encoding"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -413,9 +415,7 @@ func Test_Get_Set_Errors(t *testing.T) {
 			name:           "array index out of bounds",
 			obj:            &obj[sub]{},
 			path:           "value.array[1]",
-			expectedGet:    errors.New("array isn't expandable"),
 			expectedSet:    errors.New("array isn't expandable"),
-			expectedExists: errors.New("array isn't expandable"),
 			expectedCreate: errors.New("array isn't expandable"),
 		},
 		{
@@ -1429,12 +1429,7 @@ func Test_Get_Array(t *testing.T) {
 				}
 			}
 
-			if tt.pos+1 > l {
-				l = tt.pos + 1
-			}
-
-			l2 := f.Len()
-			assert.Equal(t, l, l2)
+			assert.Equal(t, l, f.Len(), "get doesn't extend the slice")
 
 		})
 	}
@@ -1615,12 +1610,7 @@ func Test_Get_Struct_Array_Field(t *testing.T) {
 				}
 			}
 
-			if tt.pos+1 > l {
-				l = tt.pos + 1
-			}
-
-			l2 := f.Len()
-			assert.Equal(t, l, l2)
+			assert.Equal(t, l, f.Len(), "get doesn't extend the slice")
 
 		})
 	}
@@ -1774,4 +1764,213 @@ func isUTC() bool {
 	t := time.Now()
 	zoneName, offset := t.Zone()
 	return offset == 0 && (zoneName == "UTC" || zoneName == "GMT")
+}
+
+type lookupItem struct {
+	Name string `default:"item"`
+}
+
+type lookupObj struct {
+	Name   string
+	Count  float64
+	Ints   []int
+	Array  [2]int
+	Map    map[string]int
+	IntMap map[int]string
+	Items  []lookupItem
+	Inner  *lookupItem
+}
+
+func TestGet_DoesNotChangeTheObject(t *testing.T) {
+	tests := []struct {
+		name     string
+		obj      lookupObj
+		path     string
+		expected any
+	}{
+		{"nil map", lookupObj{}, "map[x]", 0},
+		{"missing map key", lookupObj{Map: map[string]int{"a": 1}}, "map[x]", 0},
+		{"index beyond the slice", lookupObj{Ints: []int{1}}, "ints[3]", 0},
+		{"field of an element beyond the slice", lookupObj{}, "items[2].name", "item"},
+		{"index beyond the array", lookupObj{}, "array[5]", 0},
+		{"field of a nil pointer", lookupObj{}, "inner.name", "item"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := tt.obj
+			before := cloneObj(t, obj)
+
+			val, err := lookup.Get(&obj, tt.path)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, val)
+			assert.Equal(t, before, obj, "get changed the object")
+
+			val, err = lookup.Get(obj, tt.path)
+			require.NoError(t, err, "a struct passed by value")
+			assert.Equal(t, tt.expected, val)
+			assert.Equal(t, before, obj, "get changed the object")
+		})
+	}
+}
+
+// cloneObj copies obj deep enough that changes to its maps, slices and pointers
+// don't show up in the copy.
+func cloneObj(t *testing.T, obj lookupObj) lookupObj {
+	t.Helper()
+
+	c := obj
+	c.Ints = slices.Clone(obj.Ints)
+	c.Items = slices.Clone(obj.Items)
+	c.Map = maps.Clone(obj.Map)
+	c.IntMap = maps.Clone(obj.IntMap)
+	if obj.Inner != nil {
+		inner := *obj.Inner
+		c.Inner = &inner
+	}
+
+	return c
+}
+
+func TestExists_IndexBeyondTheArrayIsFalse(t *testing.T) {
+	found, err := lookup.Exists(&lookupObj{}, "array[2]")
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+func TestExists_KeyOfANilMapIsFalse(t *testing.T) {
+	found, err := lookup.Exists(lookupObj{}, "map[x]")
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+func TestNegativeIndexIsAnError(t *testing.T) {
+	for _, path := range []string{"ints[-1]", "array[-1]"} {
+		t.Run(path, func(t *testing.T) {
+			obj := lookupObj{Ints: []int{1, 2}}
+
+			_, err := lookup.Get(&obj, path)
+			assert.ErrorContains(t, err, "invalid index -1")
+
+			_, err = lookup.Exists(&obj, path)
+			assert.ErrorContains(t, err, "invalid index -1")
+
+			_, err = lookup.Set(&obj, path, 5)
+			assert.ErrorContains(t, err, "invalid index -1")
+
+			_, err = lookup.Create(&obj, path)
+			assert.ErrorContains(t, err, "invalid index -1")
+
+			assert.Equal(t, []int{1, 2}, obj.Ints)
+		})
+	}
+}
+
+func TestSet_NilPointerToAValueFieldIsAnError(t *testing.T) {
+	obj := lookupObj{Name: "old"}
+
+	_, err := lookup.Set(&obj, "name", (*string)(nil))
+	assert.ErrorContains(t, err, "can't set a nil *string to a string field")
+	assert.Equal(t, "old", obj.Name)
+}
+
+func TestSet_IntegerIntoAStringIsAnError(t *testing.T) {
+	obj := lookupObj{}
+
+	_, err := lookup.Set(&obj, "name", 5)
+	assert.ErrorContains(t, err, "invalid data type int for string field")
+	assert.Empty(t, obj.Name)
+
+	var strs struct{ Values []string }
+	_, err = lookup.Set(&strs, "values[0]", 5)
+	assert.ErrorContains(t, err, "invalid data type int for string field")
+}
+
+func TestSet_ConvertsNumbers(t *testing.T) {
+	obj := lookupObj{}
+
+	val, err := lookup.Set(&obj, "count", 5)
+	require.NoError(t, err)
+	assert.Equal(t, 5.0, val)
+	assert.Equal(t, 5.0, obj.Count)
+
+	val, err = lookup.Set(&obj, "ints[0]", int32(7))
+	require.NoError(t, err)
+	assert.Equal(t, 7, val)
+
+	val, err = lookup.Set(&obj, "map[k]", int32(7))
+	require.NoError(t, err)
+	assert.Equal(t, 7, val)
+	assert.Equal(t, 7, obj.Map["k"])
+}
+
+func TestSet_ElementOfTheWrongType(t *testing.T) {
+	for _, path := range []string{"ints[0]", "array[0]", "map[k]"} {
+		t.Run(path, func(t *testing.T) {
+			obj := lookupObj{}
+
+			_, err := lookup.Set(&obj, path, struct{}{})
+			assert.EqualError(t, err, "invalid data type struct {} for int field")
+		})
+	}
+}
+
+func TestSet_ElementParseError(t *testing.T) {
+	for _, path := range []string{"ints[0]", "array[0]", "map[k]"} {
+		t.Run(path, func(t *testing.T) {
+			obj := lookupObj{}
+
+			_, err := lookup.Set(&obj, path, "abc")
+			assert.ErrorContains(t, err, `parsing "abc": invalid syntax`)
+		})
+	}
+}
+
+func TestMapKeyParseError(t *testing.T) {
+	obj := lookupObj{IntMap: map[int]string{1: "one"}}
+
+	_, err := lookup.Get(&obj, "intmap[abc]")
+	assert.ErrorContains(t, err, `parsing "abc": invalid syntax`)
+
+	_, err = lookup.Set(&obj, "intmap[abc]", "x")
+	assert.ErrorContains(t, err, `parsing "abc": invalid syntax`)
+
+	val, err := lookup.Get(&obj, "intmap[1]")
+	require.NoError(t, err)
+	assert.Equal(t, "one", val)
+}
+
+func TestNonNumericSliceIndexIsAnError(t *testing.T) {
+	_, err := lookup.Set(&lookupObj{}, "ints[x]", 5)
+	assert.ErrorIs(t, err, lookup.ErrNotMap)
+}
+
+func TestPathThroughAValueThatIsNoStruct(t *testing.T) {
+	for _, path := range []string{"name.sub", "ints[0].sub"} {
+		t.Run(path, func(t *testing.T) {
+			obj := lookupObj{Ints: []int{1}}
+
+			_, err := lookup.Get(&obj, path)
+			assert.EqualError(t, err, "field isn't a struct")
+
+			_, err = lookup.Exists(&obj, path)
+			assert.EqualError(t, err, "field isn't a struct")
+
+			_, err = lookup.Set(&obj, path, "x")
+			assert.EqualError(t, err, "field isn't a struct")
+		})
+	}
+}
+
+func TestEmptyPath(t *testing.T) {
+	obj := lookupObj{Name: "old"}
+
+	val, err := lookup.Get(&obj, "")
+	require.NoError(t, err)
+	assert.Nil(t, val)
+
+	val, err = lookup.Set(&obj, "", "new")
+	require.NoError(t, err)
+	assert.Nil(t, val)
+	assert.Equal(t, "old", obj.Name)
 }

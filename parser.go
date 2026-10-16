@@ -106,6 +106,26 @@ func parseInterface(txt string, t reflect.Type, hooks []ParserHook) (any, error)
 	return val, nil
 }
 
+// parseElem parses an element of a slice, array or map. A hook can return any
+// value, so it is checked before it's added.
+func parseElem(txt string, t reflect.Type, hooks []ParserHook) (reflect.Value, error) {
+	val, err := Parse(txt, t, hooks...)
+	if err != nil {
+		return reflect.Value{}, err
+	}
+
+	v := reflect.ValueOf(val)
+	if !v.IsValid() {
+		return reflect.Zero(t), nil
+	}
+
+	if !v.Type().AssignableTo(t) {
+		return reflect.Value{}, fmt.Errorf("the parser of %v returned %T", t, val)
+	}
+
+	return v, nil
+}
+
 func Parse(txt string, t reflect.Type, hooks ...ParserHook) (any, error) {
 	for _, hook := range hooks {
 		if hook.To == t {
@@ -383,12 +403,12 @@ func Parse(txt string, t reflect.Type, hooks ...ParserHook) (any, error) {
 		s := reflect.MakeSlice(t, 0, len(parts))
 
 		for _, p := range parts {
-			v, err := Parse(p, e)
+			v, err := parseElem(strings.TrimSpace(p), e, hooks)
 			if err != nil {
 				return nil, err
 			}
 
-			s = reflect.Append(s, reflect.ValueOf(v))
+			s = reflect.Append(s, v)
 		}
 
 		return convert(s.Interface(), t, isPointer)
@@ -434,12 +454,12 @@ func Parse(txt string, t reflect.Type, hooks ...ParserHook) (any, error) {
 		}
 
 		for i, p := range parts {
-			v, err := Parse(p, e)
+			v, err := parseElem(strings.TrimSpace(p), e, hooks)
 			if err != nil {
 				return nil, err
 			}
 
-			s.Index(i).Set(reflect.ValueOf(v))
+			s.Index(i).Set(v)
 		}
 
 		return convert(s.Interface(), t, isPointer)
@@ -456,17 +476,17 @@ func Parse(txt string, t reflect.Type, hooks ...ParserHook) (any, error) {
 			kv := strings.Split(p, "=")
 			if len(kv) == 2 {
 
-				k, err := Parse(kv[0], kt)
+				k, err := parseElem(kv[0], kt, hooks)
 				if err != nil {
 					return nil, err
 				}
 
-				v, err := Parse(kv[1], vt)
+				v, err := parseElem(kv[1], vt, hooks)
 				if err != nil {
 					return nil, err
 				}
 
-				s.SetMapIndex(reflect.ValueOf(k), reflect.ValueOf(v))
+				s.SetMapIndex(k, v)
 			}
 		}
 

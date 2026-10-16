@@ -6,6 +6,8 @@
 package lookup_test
 
 import (
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -110,4 +112,64 @@ func TestSet_HookResultMustImplementTheInterface(t *testing.T) {
 	_, err := lookup.Set(&cfg, "pin", "1234", wrong)
 	assert.Error(t, err)
 	assert.Nil(t, cfg.Pin)
+}
+
+func TestSet_ElementImplementingTheInterfaceNeedsNoHook(t *testing.T) {
+	var cfg hookConfig
+
+	_, err := lookup.Set(&cfg, "pins[0]", &textSecret{text: "slice"})
+	require.NoError(t, err)
+	assert.Equal(t, "slice", cfg.Pins[0].Reveal())
+
+	_, err = lookup.Set(&cfg, "secrets[db]", &textSecret{text: "map"})
+	require.NoError(t, err)
+	assert.Equal(t, "map", cfg.Secrets["db"].Reveal())
+}
+
+func TestSet_HookErrorForAnElement(t *testing.T) {
+	failing := lookup.NewParserHookFor[hookSecret](func(txt string) (any, error) {
+		return nil, errors.New("boom")
+	})
+
+	for _, path := range []string{"pins[0]", "secrets[db]"} {
+		t.Run(path, func(t *testing.T) {
+			var cfg hookConfig
+
+			_, err := lookup.Set(&cfg, path, "1234", failing)
+			assert.EqualError(t, err, "boom")
+		})
+	}
+}
+
+func TestParse_HookParsesElements(t *testing.T) {
+	val, err := lookup.Parse("a, b", reflect.TypeFor[[]hookSecret](), secretHook)
+	require.NoError(t, err)
+	require.IsType(t, []hookSecret{}, val)
+	pins := val.([]hookSecret)
+	require.Len(t, pins, 2)
+	assert.Equal(t, "a", pins[0].Reveal())
+	assert.Equal(t, "b", pins[1].Reveal())
+
+	val, err = lookup.Parse("x,y", reflect.TypeFor[[2]hookSecret](), secretHook)
+	require.NoError(t, err)
+	assert.Equal(t, "y", val.([2]hookSecret)[1].Reveal())
+
+	val, err = lookup.Parse("db=1234", reflect.TypeFor[map[string]hookSecret](), secretHook)
+	require.NoError(t, err)
+	assert.Equal(t, "1234", val.(map[string]hookSecret)["db"].Reveal())
+
+	var cfg hookConfig
+	_, err = lookup.Set(&cfg, "pins", "a,b", secretHook)
+	require.NoError(t, err)
+	require.Len(t, cfg.Pins, 2)
+	assert.Equal(t, "b", cfg.Pins[1].Reveal())
+}
+
+func TestParse_HookResultForAnElementMustFit(t *testing.T) {
+	wrong := lookup.NewParserHookFor[hookSecret](func(txt string) (any, error) {
+		return txt, nil
+	})
+
+	_, err := lookup.Parse("a,b", reflect.TypeFor[[]hookSecret](), wrong)
+	assert.EqualError(t, err, "the parser of lookup_test.hookSecret returned string")
 }

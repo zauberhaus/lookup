@@ -173,6 +173,10 @@ func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...
 						}
 					} else {
 						if f.Kind() == reflect.Pointer {
+							if f.IsNil() {
+								return nil, fmt.Errorf("can't set a nil %v to a %v field", f.Type(), field.Type())
+							}
+
 							value = utils.FromPointer(value)
 							f = reflect.ValueOf(value)
 						}
@@ -208,7 +212,7 @@ func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...
 
 					field.Set(reflect.ValueOf(val))
 				} else {
-					if f.CanConvert(field.Type()) {
+					if canConvert(f, field.Type()) {
 						f = f.Convert(field.Type())
 						value = f.Interface()
 					} else if field.Type() != f.Type() || (field.Type().Kind() == reflect.Interface && !f.Type().Implements(field.Type())) {
@@ -235,12 +239,15 @@ func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...
 
 		f = reflect.ValueOf(val)
 
-		field := v.Field(fi)
+		// get continues on the new value without adding it to the object
+		if mode != get {
+			field := v.Field(fi)
 
-		if field.CanSet() {
-			field.Set(f)
-		} else {
-			return nil, fmt.Errorf("field isn't addressable: %v", field)
+			if field.CanSet() {
+				field.Set(f)
+			} else {
+				return nil, fmt.Errorf("field isn't addressable: %v", field)
+			}
 		}
 	} else {
 		val = f.Interface()
@@ -253,6 +260,10 @@ func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...
 			key = nil
 		} else {
 			if idx, err := strconv.Atoi(key.(string)); err == nil {
+				if idx < 0 {
+					return nil, fmt.Errorf("invalid index %v", idx)
+				}
+
 				index = idx
 				key = nil
 			}
@@ -261,7 +272,16 @@ func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...
 
 	if index >= 0 {
 		if f.Kind() == reflect.Array {
-			if f.Len() > index {
+			if f.Len() <= index && (mode == get || mode == exists) {
+				if mode == exists {
+					return nil, nil
+				}
+
+				val, f, err = newElem(f.Type().Elem())
+				if err != nil {
+					return nil, err
+				}
+			} else if f.Len() > index {
 				i := f.Index(index)
 				if mode == set && last {
 					val, _, err = setValue(i, i.Type(), value, hooks, func(field, f reflect.Value) {
@@ -280,25 +300,24 @@ func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...
 			} else {
 				return nil, errors.New("array isn't expandable")
 			}
+		} else if f.Kind() == reflect.Slice && f.Len() <= index && (mode == get || mode == exists) {
+			if mode == exists {
+				return nil, nil
+			}
+
+			val, f, err = newElem(t.Elem())
+			if err != nil {
+				return nil, err
+			}
 		} else if f.Kind() == reflect.Slice {
 			l := f.Len()
 			e := t.Elem()
 
 			for i := 0; i <= index; i++ {
 				if i >= l {
-					if mode == exists {
-						return nil, nil
-					}
-
-					tmp, err := utils.NewWithDefaultsOf(e)
+					_, elem, err := newElem(e)
 					if err != nil {
 						return nil, err
-					}
-
-					elem := reflect.ValueOf(tmp)
-					if !elem.IsValid() {
-						// an interface element has no default
-						elem = reflect.Zero(e)
 					}
 
 					f = reflect.Append(f, elem)
@@ -355,12 +374,15 @@ func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...
 			val = utils.CopyToHeap(val)
 			f = reflect.ValueOf(val).Elem()
 
-			field := v.Field(fi)
+			// get looks up the key in the new map without adding it to the object
+			if mode != get {
+				field := v.Field(fi)
 
-			if field.CanSet() {
-				field.Set(f)
-			} else {
-				return nil, fmt.Errorf("field isn't addressable: %v", field)
+				if field.CanSet() {
+					field.Set(f)
+				} else {
+					return nil, fmt.Errorf("field isn't addressable: %v", field)
+				}
 			}
 		}
 
@@ -411,18 +433,16 @@ func process(v reflect.Value, mode mode, value any, hooks []ParserHook, path ...
 					return nil, nil
 				}
 
-				t := f.Type()
-				e := t.Elem()
+				m := f
 
-				tmp, err := utils.NewWithDefaultsOf(e)
+				val, f, err = newElem(m.Type().Elem())
 				if err != nil {
 					return nil, err
 				}
 
-				val = tmp
-				v := reflect.ValueOf(tmp)
-				f.SetMapIndex(k, v)
-				f = v
+				if mode != get {
+					m.SetMapIndex(k, f)
+				}
 			}
 		}
 	}
@@ -446,11 +466,12 @@ func setValue(field reflect.Value, e reflect.Type, value any, hooks []ParserHook
 
 	f := reflect.ValueOf(value)
 
-	if !field.CanSet() {
+	// a map isn't set itself, the value is added to it
+	if field.Kind() != reflect.Map && !field.CanSet() {
 		return nil, f, fmt.Errorf("field isn't addressable: %v", field.Type())
 	}
 
-	if field.Type().Kind() == reflect.Interface {
+	if e.Kind() == reflect.Interface {
 		if f.Type().Implements(e) {
 			set(field, f)
 			return value, f, nil
@@ -476,16 +497,48 @@ func setValue(field reflect.Value, e reflect.Type, value any, hooks []ParserHook
 		set(field, f)
 		return val, f, nil
 	} else {
-		if f.CanConvert(field.Type()) {
-			f = f.Convert(field.Type())
+		if f.Type() != e {
+			if !canConvert(f, e) {
+				return nil, f, fmt.Errorf("invalid data type %v for %v field", f.Type(), e)
+			}
+
+			f = f.Convert(e)
 			value = f.Interface()
-		} else if f.Type() != e || (e.Kind() == reflect.Interface && !f.Type().Implements(e)) {
-			return nil, f, fmt.Errorf("invalid data type %v for %v field", e, field.Type())
 		}
 
 		set(field, f)
 		return value, f, nil
 	}
+}
+
+// newElem returns the default of an element of type e, which isn't added to
+// anything yet. An interface has no default, so its element is the zero value.
+func newElem(e reflect.Type) (any, reflect.Value, error) {
+	tmp, err := utils.NewWithDefaultsOf(e)
+	if err != nil {
+		return nil, reflect.Value{}, err
+	}
+
+	elem := reflect.ValueOf(tmp)
+	if !elem.IsValid() {
+		elem = reflect.Zero(e)
+	}
+
+	return tmp, elem, nil
+}
+
+// canConvert is reflect's CanConvert without the integer to string conversion,
+// which would turn a number into the character with that code.
+func canConvert(f reflect.Value, t reflect.Type) bool {
+	if t.Kind() == reflect.String {
+		switch f.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return false
+		}
+	}
+
+	return f.CanConvert(t)
 }
 
 func split(path string) []string {

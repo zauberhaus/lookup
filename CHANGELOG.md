@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/zauberhaus/lookup/compare/v1.1.0...v1.1.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* upgrade dependencies ([fd98a4d](https://github.com/zauberhaus/lookup/commit/fd98a4d62cbe228b73f9c78c3f8c8775ceb0fdb9))
+
 ## [1.1.0](https://github.com/zauberhaus/lookup/compare/v1.0.2...v1.1.0) (2026-10-16)
 
 

@@ -72,6 +72,40 @@ func Split(txt string, sep rune) []string {
 	return result
 }
 
+func hookInput(f reflect.Value, t reflect.Type, hooks []ParserHook) (string, bool) {
+	var txt string
+
+	switch {
+	case f.Kind() == reflect.String:
+		txt = f.String()
+	case f.Kind() == reflect.Pointer && f.Elem().Kind() == reflect.String:
+		txt = f.Elem().String()
+	default:
+		return "", false
+	}
+
+	for _, hook := range hooks {
+		if hook.To == t {
+			return txt, true
+		}
+	}
+
+	return "", false
+}
+
+func parseInterface(txt string, t reflect.Type, hooks []ParserHook) (any, error) {
+	val, err := Parse(txt, t, hooks...)
+	if err != nil {
+		return nil, err
+	}
+
+	if val == nil || !reflect.TypeOf(val).Implements(t) {
+		return nil, fmt.Errorf("the parser of %v returned %T", t, val)
+	}
+
+	return val, nil
+}
+
 func Parse(txt string, t reflect.Type, hooks ...ParserHook) (any, error) {
 	for _, hook := range hooks {
 		if hook.To == t {

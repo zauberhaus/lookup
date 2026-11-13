@@ -10,3 +10,7 @@ examples/basic/basic
 examples/create/create
 examples/hooks/hooks
 examples/parsing/parsing
+
+package.json
+package-lock.json
+node_modules/

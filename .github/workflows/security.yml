@@ -1,0 +1,96 @@
+name: Security
+
+# No path filter: the "security" check is required by the main ruleset, so it
+# has to be reported for every pull request.
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write # push the image when it does not exist yet
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/security
+
+jobs:
+  # The tools run in an image (Go, govulncheck, gosec, gitleaks) so they are not
+  # compiled on every run. It is tagged with a hash of docker/security and
+  # scripts/security-tools.env: it is built only when no image with that tag
+  # exists, i.e. only when those files changed. The security job waits for it.
+  image:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Compute image tag
+      id: tag
+      run: |
+        hash=${{ hashFiles('docker/security/**', 'scripts/security-tools.env') }}
+        echo "image=$IMAGE:${hash:0:16}" >> "$GITHUB_OUTPUT"
+
+    - name: Log in to ghcr.io
+      uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Check for an existing image
+      id: exists
+      run: |
+        if docker manifest inspect "${{ steps.tag.outputs.image }}" >/dev/null 2>&1; then
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "Image ${{ steps.tag.outputs.image }} exists"
+        else
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          echo "Image ${{ steps.tag.outputs.image }} has to be built"
+        fi
+
+    - name: Read tool versions
+      id: versions
+      if: steps.exists.outputs.found != 'true'
+      run: grep -E "^[A-Z_]+=" scripts/security-tools.env >> "$GITHUB_OUTPUT"
+
+    - name: Build and push image
+      if: steps.exists.outputs.found != 'true'
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: docker/security/Dockerfile
+        push: true
+        pull: true
+        tags: ${{ steps.tag.outputs.image }}
+        # Links the package to this repository, so the workflows can pull it.
+        labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+        build-args: |
+          GOVULNCHECK_VERSION=${{ steps.versions.outputs.GOVULNCHECK_VERSION }}
+          GOSEC_VERSION=${{ steps.versions.outputs.GOSEC_VERSION }}
+          GITLEAKS_VERSION=${{ steps.versions.outputs.GITLEAKS_VERSION }}
+
+  security:
+    needs: image
+    runs-on: ubuntu-latest
+
+    container:
+      image: ${{ needs.image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0 # gitleaks scans the full history
+
+    # The workspace is owned by another user than the container's, which makes
+    # git (used by gitleaks) refuse it.
+    - name: Trust workspace
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Run go vet, govulncheck, gosec and gitleaks
+      run: ./scripts/security.sh

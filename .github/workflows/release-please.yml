@@ -25,21 +25,28 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # A GitHub App token, not GITHUB_TOKEN: pull requests created with it
+      # start the required checks without a manual approval, and commits made
+      # through the API are signed, which the rulesets require.
+      - name: Create App Token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Check Commits
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          # token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           release-type: go
           release-as: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
-
-      - name: Checkout Code 
-        if: steps.release.outputs.prs_created == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Merge Pull Request
         if: steps.release.outputs.prs_created == 'true'
         id: merge
         run: gh pr merge --merge --auto "${{ fromJSON(steps.release.outputs.pr || '{}').number }}" 
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_REPO: ${{ github.repository }} # no checkout, so gh needs the repository
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

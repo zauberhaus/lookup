@@ -1,0 +1,55 @@
+name: Available Updates
+run-name: "Updates PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
+
+# Comments the available updates (a newer Go release, the age of go.mod and
+# outdated dependencies) on the pull request. Not a required check.
+on:
+  pull_request:
+  schedule:
+    - cron: "0 20 * * 0" # weekly, so a go.mod that is getting too old is noticed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  updates:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0 # the age of go.mod comes from its last commit
+
+    - name: Setup go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: "go.mod"
+        check-latest: true
+
+    # The script fails when go.mod is too old. The comment is posted anyway and
+    # the job fails afterwards.
+    - name: Get available updates
+      id: updates
+      run: |
+        if ./scripts/updates.sh > updates.md 2> updates.err; then
+          echo "failed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "failed=true" >> "$GITHUB_OUTPUT"
+          { echo "# Available Updates"; echo; echo "> [!caution]"; sed 's/^/> /' updates.err; } > updates.md
+        fi
+        cat updates.md >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Add Updates Comment
+      if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+      with:
+        header: updates
+        recreate: true
+        path: updates.md
+
+    - name: Fail when go.mod is too old
+      if: steps.updates.outputs.failed == 'true'
+      run: exit 1

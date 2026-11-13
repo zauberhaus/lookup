@@ -2,17 +2,21 @@
 #
 # Release the current branch (normally dev) into main.
 #
-#   1. Runs all tests (tests.sh); everything must be committed.
-#   2. Checks that all commits are pushed (it never pushes) and opens a PR
-#      into main (or reuses the open one).
-#   3. Waits for the PR checks, then merges it with a merge commit.
-#   4. Follows the Release Check workflow that the merge triggers on main.
+#   1. Pushes the branch and opens a PR into main (or reuses the open one).
+#   2. Waits for the PR checks, then merges it with a merge commit.
+#   3. Follows the Release Check workflow that the merge triggers on main.
 #      release-please then opens the release PR, which the workflow merges.
-#   5. Waits for the new GitHub release to appear and prints its version.
+#   4. Waits for the new GitHub release to appear and prints its version.
 #
-# With -v the workflow is additionally dispatched to force that version.
+# Before anything is pushed, the build, the tests and the security checks
+# (scripts/security.sh) must pass; -s skips them.
+#
+# With -v an empty commit with a "Release-As: x.y.z" footer is added to the
+# branch, which makes release-please use that version.
 #
 # Requires an authenticated GitHub CLI (gh).
+
+# cspell:words nysh
 
 set -euo pipefail
 
@@ -20,15 +24,18 @@ BASE=main
 WORKFLOW=release-please.yml
 TIMEOUT=900
 
+cd "$(dirname "$0")/.."
+
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [-v VERSION] [-t SECONDS] [-n] [-y]
+Usage: $(basename "$0") [-v VERSION] [-t SECONDS] [-n] [-y] [-s]
 
-  -v VERSION  force the release version (e.g. 1.6.0) by dispatching the
-              release workflow after the merge
+  -v VERSION  force the release version (e.g. 1.6.0) by adding a
+              "Release-As: VERSION" commit to the branch before the PR
   -t SECONDS  how long to wait for the new release (default: $TIMEOUT)
   -n          only create the PR; do not wait, merge or start a release
   -y          do not ask for confirmation before merging
+  -s          skip the build, test and security checks
   -h          show this help
 EOF
 }
@@ -39,13 +46,15 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 VERSION=
 PR_ONLY=false
 ASSUME_YES=false
+SKIP_CHECKS=false
 
-while getopts "v:t:nyh" opt; do
+while getopts "v:t:nysh" opt; do
   case "$opt" in
     v) VERSION=$OPTARG ;;
     t) TIMEOUT=$OPTARG ;;
     n) PR_ONLY=true ;;
     y) ASSUME_YES=true ;;
+    s) SKIP_CHECKS=true ;;
     h) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -58,12 +67,12 @@ if [ -n "$VERSION" ]; then
   [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid version '$VERSION' (expected e.g. 1.2.3)"
 fi
 
-# poll_run prints the id of the first workflow run matching the given gh run
-# list filters, waiting up to about a minute for it to appear.
+# poll_run prints the id of the workflow run triggered by the given commit,
+# waiting up to about a minute for it to appear.
 poll_run() {
   local id i
   for i in $(seq 1 20); do
-    id=$(gh run list --workflow "$WORKFLOW" "$@" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+    id=$(gh run list --workflow "$WORKFLOW" --event push --commit "$1" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
     if [ -n "$id" ]; then
       echo "$id"
       return 0
@@ -113,7 +122,21 @@ HEAD_BRANCH=$(git branch --show-current)
 [ -n "$HEAD_BRANCH" ] || die "detached HEAD; check out the branch to release"
 [ "$HEAD_BRANCH" != "$BASE" ] || die "already on $BASE; check out the branch to release"
 
-[ -z "$(git status --porcelain)" ] || die "uncommitted changes; commit or stash them first"
+[ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes; commit or stash them first"
+
+if $SKIP_CHECKS; then
+  log "Skipping the build, test and security checks"
+else
+  log "Building"
+  go build ./... || die "build failed"
+  go vet ./... || die "go vet failed"
+
+  log "Running tests"
+  go test -race ./... || die "tests failed"
+
+  log "Checking security"
+  ./scripts/security.sh || die "security checks failed"
+fi
 
 git fetch --quiet origin
 if [ -n "$VERSION" ] && [ -n "$(git ls-remote --tags origin "refs/tags/v$VERSION")" ]; then
@@ -122,19 +145,18 @@ fi
 
 RELEASE_BEFORE=$(latest_release)
 
+if [ -n "$VERSION" ]; then
+  log "Adding Release-As: $VERSION commit"
+  git commit --quiet --allow-empty -m "chore: release $VERSION" -m "Release-As: $VERSION"
+fi
+
 AHEAD=$(git rev-list --count "origin/$BASE..HEAD")
 [ "$AHEAD" -gt 0 ] || die "$HEAD_BRANCH has no commits that are not already in $BASE"
 
-log "Running all tests"
-"$(dirname "$0")/tests.sh"
-[ -z "$(git status --porcelain)" ] || { git status --short >&2; die "the tests changed files; commit them first"; }
-
-# The script never pushes; every commit must already be on the remote.
-if ! git rev-parse --verify --quiet "origin/$HEAD_BRANCH" >/dev/null; then
-  die "$HEAD_BRANCH does not exist on origin; push it first"
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse --verify --quiet "origin/$HEAD_BRANCH" || true)" ]; then
+  log "Pushing $HEAD_BRANCH"
+  git push --set-upstream origin "$HEAD_BRANCH"
 fi
-UNPUSHED=$(git rev-list --count "origin/$HEAD_BRANCH..HEAD")
-[ "$UNPUSHED" -eq 0 ] || die "$UNPUSHED commit(s) of $HEAD_BRANCH are not pushed; push them first"
 
 PR=$(gh pr list --head "$HEAD_BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
 if [ -n "$PR" ]; then
@@ -166,22 +188,12 @@ log "Merging PR #$PR"
 gh pr merge "$PR" --merge
 MERGE_SHA=$(gh pr view "$PR" --json mergeCommit --jq .mergeCommit.oid)
 
-# The merge to main triggers the workflow, unless no Go or module files changed.
+# The merge to main triggers the workflow only if Go, module or CHANGELOG.md files changed.
 log "Waiting for the release workflow triggered by the merge"
-if RUN=$(poll_run --event push --commit "$MERGE_SHA"); then
+if RUN=$(poll_run "$MERGE_SHA"); then
   gh run watch "$RUN" --exit-status
-elif [ -z "$VERSION" ]; then
-  die "no workflow run was triggered by the merge (no Go or module files changed?); rerun with -v VERSION to dispatch one"
 else
-  log "No run triggered by the merge"
-fi
-
-if [ -n "$VERSION" ]; then
-  log "Dispatching release workflow for $VERSION"
-  STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  gh workflow run "$WORKFLOW" --ref "$BASE" -f "version=$VERSION"
-  RUN=$(poll_run --event workflow_dispatch --created ">=$STARTED") || die "dispatched run did not appear"
-  gh run watch "$RUN" --exit-status
+  die "no workflow run was triggered by the merge (no Go, module or CHANGELOG.md files changed?)"
 fi
 
 RELEASE_PR=$(gh pr list --base "$BASE" --head "release-please--branches--$BASE" --state open --json url --jq '.[0].url // empty')

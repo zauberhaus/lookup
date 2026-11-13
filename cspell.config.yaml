@@ -1,0 +1,37 @@
+version: "0.2"
+language: en
+ignorePaths:
+  - go.mod
+  - go.sum
+  - .gitignore
+  - cspell.config.yaml
+words:
+  - boumenot
+  - covermode
+  - coverprofile
+  - creasty
+  - deepcopy
+  - Enumer
+  - gitleaks
+  - GOBIN
+  - gocover
+  - GOPATH
+  - gosec
+  - gotest
+  - gotestfmt
+  - genproto
+  - gotesttools
+  - GOTOOLCHAIN
+  - govulncheck
+  - intmap
+  - irongut
+  - marocchino
+  - modcache
+  - opencontainers
+  - securego
+  - shopspring
+  - stretchr
+  - strs
+  - tiendc
+  - Zauberhaus
+  - zricethezav

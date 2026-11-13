@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Build everything (including the examples) and run all tests with coverage.
+# Build everything (including any examples) and run all tests with coverage.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 log=$(mktemp "${TMPDIR:-/tmp}/gotest.XXXXXX")
 
-# the examples are programs without tests, make sure they still compile
+# examples are programs without tests and mocks are generated: make sure
+# everything still compiles, but do not test or measure them
 go build ./...
 go vet ./...
 
@@ -15,7 +16,13 @@ if command -v gotestfmt >/dev/null; then
 else
   fmt=cat
 fi
-go test -race -json -coverprofile=coverage.txt -v $(go list ./... | grep -v /examples/) 2>&1 | tee "$log" | $fmt
+# shellcheck disable=SC2046 # the package list must expand into arguments
+go test -race -json -coverprofile=coverage.txt -covermode atomic -v \
+  $(go list ./... | grep -Ev '/(examples|mock)(/|$)' || true) 2>&1 | tee "$log" | $fmt
 echo "test log: $log"
+
+# generated mock files do not count towards the coverage
+grep -v 'mock\.go:' coverage.txt > coverage.tmp || true
+mv coverage.tmp coverage.txt
 
 go tool cover -func=coverage.txt

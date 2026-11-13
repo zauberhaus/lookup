@@ -3,10 +3,6 @@ run-name: "Test PR #${{ github.event.pull_request.number }} - ${{ github.event.p
 
 on:
   pull_request:
-    paths:
-      - "**/*.go"
-      - "go.mod"
-      - "go.sum"
 
 permissions:
   contents: read
@@ -19,31 +15,50 @@ jobs:
     steps:
     - name: Checkout Code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+
+    - name: Check for Go changes
+      id: changes
+      env:
+        BASE: ${{ github.event.pull_request.base.sha }}
+      run: |
+        if git diff --name-only "$BASE"...HEAD | grep -Eq '(\.go|^go\.mod|^go\.sum)$'; then
+          echo "go=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "go=false" >> "$GITHUB_OUTPUT"
+          echo "No Go changes, skipping the tests"
+        fi
 
     - name: Setup go
+      if: steps.changes.outputs.go == 'true'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: "go.mod"
         check-latest: true
 
     - name: Setup gotestfmt
+      if: steps.changes.outputs.go == 'true'
       run: |
         go install github.com/boumenot/gocover-cobertura@latest
         go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
 
     - name: Run Tests
+      if: steps.changes.outputs.go == 'true'
       run: |
         ./tests.sh
 
     - name: Convert go coverage to cobertura format
+      if: steps.changes.outputs.go == 'true'
       shell: bash
       run: |
         gocover-cobertura \
-          -ignore-dirs '/generator$' \
           -ignore-dirs '^/tools' \
+          -ignore-files '_mock\.go$' \
           < coverage.txt > coverage.xml
 
     - name: Generate code coverage report
+      if: steps.changes.outputs.go == 'true'
       uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
       with:
         filename: coverage.xml
@@ -57,6 +72,7 @@ jobs:
         thresholds: '50 70'
 
     - name: Add Coverage PR Comment
+      if: steps.changes.outputs.go == 'true'
       uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
       with:
         header: test

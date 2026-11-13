@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.4](https://github.com/zauberhaus/lookup/compare/v1.1.3...v1.1.4) (2026-11-13)
+
+
+### Bug Fixes
+
+* remove snyk and optimize release process ([aee0c96](https://github.com/zauberhaus/lookup/commit/aee0c96924cc8c63f73a9972dc9ac5b84c60e3f2))
+
 ## [1.1.3](https://github.com/zauberhaus/lookup/compare/v1.1.2...v1.1.3) (2026-11-12)
 
 

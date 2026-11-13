@@ -12,7 +12,9 @@ if [ ! -f package.json ]; then
 {
   "private": true,
   "devDependencies": {
-    "cspell": "8.17.1"
+    "cspell": "10.4.1",
+    "@cspell/dict-en-au": "1.1.31",
+    "@cspell/dict-en-gb": "5.0.38"
   }
 }
 EOF

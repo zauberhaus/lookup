@@ -1,6 +1,11 @@
 name: Run Tests
 run-name: "Test PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}"
 
+# No path filter on the trigger: the "test" check is required by the main
+# ruleset, so the job has to be reported for every pull request (the
+# release-please PR only changes CHANGELOG.md and would otherwise wait for it
+# forever). Instead the job always runs and skips its steps, which counts as
+# success, when no Go file, go.mod or go.sum changed.
 on:
   pull_request:
 
